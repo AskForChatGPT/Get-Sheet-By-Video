@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>圖片拼接工具</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        button {
+            background-color: #800080;
+            color: #ffffff;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #990099;
+        }
+        #imagePreview {
+            margin: 20px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        #imagePreview img {
+            max-width: 200px;
+            border: 2px solid #800080;
+            border-radius: 5px;
+        }
+        #resultCanvas {
+            margin-top: 20px;
+            border: 2px solid #800080;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>圖片拼接工具</h1>
+    <input type="file" id="imageInput" accept=".png" multiple style="margin: 10px;">
+    <button onclick="loadImages()">載入圖片</button>
+    <div id="imagePreview"></div>
+    <button onclick="stitchImages()">按順序拼接</button>
+    <button onclick="saveImage()">另存圖片</button>
+    <canvas id="resultCanvas"></canvas>
+
+    <script>
+        let loadedImages = [];
+
+ async function loadImages() {
+        const input = document.getElementById('imageInput');
+        const preview = document.getElementById('imagePreview');
+        preview.innerHTML = '';
+        loadedImages = [];
+
+        // 按文件名末尾數字排序
+        const files = Array.from(input.files).sort((a, b) => {
+            const numA = parseInt(a.name.match(/(\d+)(?=\.\w+$)/)?.[1] || 0);
+            const numB = parseInt(b.name.match(/(\d+)(?=\.\w+$)/)?.[1] || 0);
+            return numA - numB;
+        });
+
+        // 使用 Promise 確保按順序載入
+        for (const file of files) {
+            const img = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const image = new Image();
+                    image.src = e.target.result;
+                    image.onload = () => resolve(image);
+                };
+                reader.readAsDataURL(file);
+            });
+            loadedImages.push(img);
+            preview.appendChild(img); // 嚴格按順序添加預覽
+        }
+    }
+   function stitchImages() {
+        if (loadedImages.length === 0) {
+            alert('請先載入圖片！');
+            return;
+        }
+
+        const canvas = document.getElementById('resultCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // 計算最大原始寬度和總高度
+        const maxWidth = Math.max(...loadedImages.map(img => img.naturalWidth));
+        const totalHeight = loadedImages.reduce((sum, img) => sum + img.naturalHeight, 0);
+        
+        canvas.width = maxWidth;
+        canvas.height = totalHeight;
+
+        // 嚴格按排序後的順序垂直拼接
+        let currentY = 0;
+        loadedImages.forEach((img) => {
+            ctx.drawImage(img, 0, currentY, img.naturalWidth, img.naturalHeight);
+            currentY += img.naturalHeight;
+        });
+    }
+
+        function saveImage() {
+            const canvas = document.getElementById('resultCanvas');
+            if (canvas.width === 0 || canvas.height === 0) {
+                alert('請先拼接圖片！');
+                return;
+            }
+
+            const link = document.createElement('a');
+            link.download = 'stitched_image.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+    </script>
+</body>
+</html>

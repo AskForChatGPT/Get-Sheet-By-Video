@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://code.jquery.com https://unpkg.com https://d3js.org https://threejs.org https://cdn.plot.ly https://stackpath.bootstrapcdn.com https://maps.googleapis.com https://cdn.tailwindcss.com https://ajax.googleapis.com https://kit.fontawesome.com https://cdn.datatables.net https://maxcdn.bootstrapcdn.com https://code.highcharts.com https://tako-static-assets-production.s3.amazonaws.com https://www.youtube.com https://fonts.googleapis.com https://fonts.gstatic.com https://pfst.cf2.poecdn.net https://puc.poecdn.net https://i.imgur.com https://wikimedia.org https://*.icons8.com https://*.giphy.com https://picsum.photos https://images.unsplash.com; frame-src 'self' https://www.youtube.com https://trytako.com; child-src 'self'; manifest-src 'self'; worker-src 'self'; upgrade-insecure-requests; block-all-mixed-content;">
+    <style>
+        body {
+            background-color: #333;
+            color: white;
+            margin: 20px;
+            font-family: Arial;
+        }
+        .toolbar {
+            margin: 10px 0;
+        }
+        button {
+            background-color: #8a2be2;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        button:hover {
+            background-color: #9932cc;
+        }
+        canvas {
+            border: 2px solid #666;
+            margin-top: 10px;
+        }
+        #colorPreview {
+            width: 30px;
+            height: 30px;
+            border: 2px solid white;
+            display: inline-block;
+            vertical-align: middle;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <input type="file" id="imageInput" accept="image/png">
+        <button onclick="saveImage()">輸出PNG</button>
+        <button id="colorPickerBtn" onclick="toggleColorPicker()">I (滴管)</button>
+        <button onclick="toggleDrawMode()">M (繪製)</button>
+        <button onclick="startCutMode()">C (剪除綁合)</button>
+        <div id="colorPreview"></div>
+    </div>
+    <canvas id="mainCanvas"></canvas>
+
+    <script>
+        let canvas = document.getElementById('mainCanvas');
+        let ctx = canvas.getContext('2d');
+        let isDrawing = false;
+        let isZooming = false;
+        let isPanning = false;
+        let startX, startY;
+        let currentColor = '#ffffff';
+        let colorPickerActive = false;
+        let cutMode = false;
+        let originalImageData = null;
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let lastZTime = 0;
+        let history = [];
+        let redoStack = [];
+        const MAX_HISTORY = 10;
+
+        function addToHistory() {
+            if (history.length >= MAX_HISTORY) {
+                history.shift();
+            }
+            history.push({
+                imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+                width: canvas.width,
+                height: canvas.height,
+                scale: scale,
+                offsetX: offsetX,
+                offsetY: offsetY
+            });
+            redoStack = [];
+        }
+
+        document.getElementById('imageInput').addEventListener('change', function(e) {
+            let file = e.target.files[0];
+            let reader = new FileReader();
+            
+            reader.onload = function(event) {
+                let img = new Image();
+                img.crossOrigin = "Anonymous";
+                img.onload = function() {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    addToHistory();
+                    redrawCanvas();
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function redrawCanvas() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+            ctx.putImageData(originalImageData, 0, 0);
+            ctx.restore();
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.code === 'KeyZ') {
+                e.preventDefault();
+                if (history.length > 0) {
+                    let state = history.pop();
+                    redoStack.push({
+                        imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+                        width: canvas.width,
+                        height: canvas.height,
+                        scale: scale,
+                        offsetX: offsetX,
+                        offsetY: offsetY
+                    });
+                    canvas.width = state.width;
+                    canvas.height = state.height;
+                    scale = state.scale;
+                    offsetX = state.offsetX;
+                    offsetY = state.offsetY;
+                    originalImageData = state.imageData;
+                    ctx.putImageData(originalImageData, 0, 0); // 直接應用圖像數據
+                    redrawCanvas();
+                }
+            } else if (e.ctrlKey && e.code === 'KeyY') {
+                e.preventDefault();
+                if (redoStack.length > 0) {
+                    let state = redoStack.pop();
+                    history.push({
+                        imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+                        width: canvas.width,
+                        height: canvas.height,
+                        scale: scale,
+                        offsetX: offsetX,
+                        offsetY: offsetY
+                    });
+                    canvas.width = state.width;
+                    canvas.height = state.height;
+                    scale = state.scale;
+                    offsetX = state.offsetX;
+                    offsetY = state.offsetY;
+                    originalImageData = state.imageData;
+                    ctx.putImageData(originalImageData, 0, 0); // 直接應用圖像數據
+                    redrawCanvas();
+                }
+            } else {
+                switch(e.code) {
+                    case 'KeyI':
+                        toggleColorPicker();
+                        break;
+                    case 'KeyM':
+                        toggleDrawMode();
+                        break;
+                    case 'KeyC':
+                        startCutMode();
+                        break;
+                    case 'KeyZ':
+                        if (!isZooming) {
+                            let currentTime = Date.now();
+                            if (currentTime - lastZTime < 300) {
+                                scale = window.innerHeight / canvas.height;
+                                offsetX = 0;
+                                offsetY = 0;
+                                redrawCanvas();
+                                addToHistory();
+                            }
+                            lastZTime = currentTime;
+                        }
+                        break;
+                }
+            }
+        });
+
+        function toggleColorPicker() {
+            colorPickerActive = !colorPickerActive;
+            isDrawing = false;
+            cutMode = false;
+            canvas.style.cursor = colorPickerActive ? 'crosshair' : 'default';
+        }
+
+        canvas.addEventListener('click', function(e) {
+            if (!colorPickerActive) return;
+            
+            let rect = canvas.getBoundingClientRect();
+            let x = (e.clientX - rect.left - offsetX) / scale;
+            let y = (e.clientY - rect.top - offsetY) / scale;
+            
+            let pixel = ctx.getImageData(x, y, 1, 1).data;
+            currentColor = `rgba(${pixel[0]},${pixel[1]},${pixel[2]},${pixel[3]/255})`;
+            document.getElementById('colorPreview').style.backgroundColor = currentColor;
+        });
+
+        function toggleDrawMode() {
+            isDrawing = !isDrawing;
+            colorPickerActive = false;
+            cutMode = false;
+            canvas.style.cursor = isDrawing ? 'crosshair' : 'default';
+        }
+
+        canvas.addEventListener('mousedown', function(e) {
+            let rect = canvas.getBoundingClientRect();
+            if (e.button === 0 && (isDrawing || (e.code === 'KeyZ' && !isZooming))) {
+                startX = (e.clientX - rect.left - offsetX) / scale;
+                startY = (e.clientY - rect.top - offsetY) / scale;
+                
+                if (isDrawing) {
+                    canvas.addEventListener('mousemove', onMouseMove);
+                    canvas.addEventListener('mouseup', onMouseUp);
+                } else if (e.code === 'KeyZ') {
+                    isZooming = true;
+                    canvas.addEventListener('mousemove', onZoomMove);
+                    canvas.addEventListener('mouseup', onZoomEnd);
+                }
+            } else if (e.button === 1) {
+                isPanning = true;
+                startX = e.clientX;
+                startY = e.clientY;
+                canvas.addEventListener('mousemove', onPanMove);
+                canvas.addEventListener('mouseup', onPanEnd);
+            }
+        });
+
+        function onMouseMove(e) {
+            let rect = canvas.getBoundingClientRect();
+            let currentX = (e.clientX - rect.left - offsetX) / scale;
+            let currentY = (e.clientY - rect.top - offsetY) / scale;
+            
+            redrawCanvas();
+            ctx.fillStyle = currentColor;
+            ctx.fillRect(startX, startY, currentX - startX, currentY - startY);
+        }
+
+        function onMouseUp(e) {
+            let rect = canvas.getBoundingClientRect();
+            let currentX = (e.clientX - rect.left - offsetX) / scale;
+            let currentY = (e.clientY - rect.top - offsetY) / scale;
+            
+            ctx.fillStyle = currentColor;
+            ctx.fillRect(startX, startY, currentX - startX, currentY - startY);
+            originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            addToHistory();
+            
+            canvas.removeEventListener('mousemove', onMouseMove);
+            canvas.removeEventListener('mouseup', onMouseUp);
+            isDrawing = false;
+            canvas.style.cursor = 'default';
+        }
+
+        function onZoomMove(e) {
+            let rect = canvas.getBoundingClientRect();
+            let deltaY = e.clientY - startY - rect.top;
+            let newScale = scale * (1 - deltaY * 0.005);
+            scale = Math.max(0.1, Math.min(newScale, 10));
+            redrawCanvas();
+        }
+
+        function onZoomEnd() {
+            isZooming = false;
+            canvas.removeEventListener('mousemove', onZoomMove);
+            canvas.removeEventListener('mouseup', onZoomEnd);
+            originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            addToHistory();
+        }
+
+        function onPanMove(e) {
+            offsetX += e.clientX - startX;
+            offsetY += e.clientY - startY;
+            startX = e.clientX;
+            startY = e.clientY;
+            redrawCanvas();
+        }
+
+        function onPanEnd() {
+            isPanning = false;
+            canvas.removeEventListener('mousemove', onPanMove);
+            canvas.removeEventListener('mouseup', onPanEnd);
+            originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            addToHistory();
+        }
+
+        let cutStartY, cutEndY;
+
+        function startCutMode() {
+            cutMode = true;
+            isDrawing = false;
+            colorPickerActive = false;
+            canvas.style.cursor = 'crosshair';
+        }
+
+        canvas.addEventListener('mousedown', function(e) {
+            if (!cutMode) return;
+            
+            let rect = canvas.getBoundingClientRect();
+            cutStartY = (e.clientY - rect.top - offsetY) / scale;
+            
+            canvas.addEventListener('mousemove', onCutMove);
+            canvas.addEventListener('mouseup', onCutEnd);
+        });
+
+        function onCutMove(e) {
+            let rect = canvas.getBoundingClientRect();
+            let currentY = (e.clientY - rect.top - offsetY) / scale;
+            
+            redrawCanvas();
+            ctx.fillStyle = 'rgba(255,0,0,0.3)';
+            ctx.fillRect(0, cutStartY, canvas.width, currentY - cutStartY);
+        }
+
+        function onCutEnd(e) {
+            cutMode = false;
+            canvas.style.cursor = 'default';
+            
+            let rect = canvas.getBoundingClientRect();
+            cutEndY = (e.clientY - rect.top - offsetY) / scale;
+            
+            let top = Math.min(cutStartY, cutEndY);
+            let bottom = Math.max(cutStartY, cutEndY);
+            
+            if (top < 0) top = 0;
+            if (bottom > canvas.height) bottom = canvas.height;
+            if (top >= bottom) return;
+            
+            let topPart = ctx.getImageData(0, 0, canvas.width, top);
+            let bottomPart = ctx.getImageData(0, bottom, canvas.width, canvas.height - bottom);
+            
+            canvas.height = top + (canvas.height - bottom);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.putImageData(topPart, 0, 0);
+            ctx.putImageData(bottomPart, 0, top); // 修正為 bottomPart
+            
+            originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            addToHistory();
+            redrawCanvas();
+            
+            canvas.removeEventListener('mousemove', onCutMove);
+            canvas.removeEventListener('mouseup', onCutEnd);
+        }
+
+        function saveImage() {
+            let link = document.createElement('a');
+            link.download = 'modified-image.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+    </script>
+</body>
+</html>

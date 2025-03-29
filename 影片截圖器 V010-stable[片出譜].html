@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Video Marker Editor</title>
+    <style>
+        body {
+            background: #1a1a1a;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            margin: 0; /* 移除 body 的預設邊距 */
+        }
+        button {
+            background: #800080;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            margin: 2px;
+        }
+        button:hover {
+            background: #990099;
+        }
+        #timeline {
+            width: 100%;
+            height: 20px;
+            background: #333;
+            position: relative;
+        }
+        .marker {
+            position: absolute;
+            width: 2px;
+            height: 100%;
+            background: red;
+        }
+        #cropRect {
+            position: absolute;
+            border: 2px solid yellow;
+            pointer-events: none;
+        }
+        .mini-player {
+            margin: 10px 0;
+            position: relative;
+        }
+        .screenshot {
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        .screenshot {
+    border: 1px solid #444;
+    background: #222;
+    display: block; /* 改为块状显示 */
+    max-width: 100%;
+    margin: 10px auto; /* 居中显示 */
+}
+    </style>
+</head>
+<body>
+    <input type="file" id="videoInput" accept="video/mp4">
+    <button onclick="document.getElementById('videoInput').click()">Load MP4</button>
+    <button onclick="saveSettings()">Save Settings</button>
+<button onclick="loadSettings()">Load Settings</button>
+    <div style="position: relative;">
+        <video id="mainVideo" controls style="max-width: 800px; display: block;"></video>
+        <div id="cropRect"></div>
+    </div>
+    
+<div>
+    Crop Range: <input id="rangeInput" type="text" placeholder="x1,y1,x2,y2,x3,y3,x4,y4">
+    <button onclick="updateCropRange()">Update Crop</button>
+    <span style="margin-left:20px;">
+        顶部Y: <input id="simpleYTopInput" type="number" placeholder="输入顶部Y坐标">
+        <button onclick="updateSimpleYTop()">应用</button>
+        底部Y: <input id="simpleYBottomInput" type="number" placeholder="输入底部Y坐标">
+        <button onclick="updateSimpleYBottom()">应用</button>
+    </span>
+</div>
+    <div id="timeline"></div>
+    <div id="miniPlayers"></div>
+
+    <script>
+        const video = document.getElementById('mainVideo');
+        const timeline = document.getElementById('timeline');
+        const cropRect = document.getElementById('cropRect');
+        const miniPlayers = document.getElementById('miniPlayers');
+        let markers = [];
+        let currentMarker = -1;
+        let cropPoints = {};
+        let dragging = false;
+        let dragStart = {x: 0, y: 0};
+        let currentMiniPlayer = null;
+        let miniPlayerSpeed = 1;
+        let miniPlayerOffset = 0;
+        let isFPressed = false;
+
+        // Video loading with default crop
+        document.getElementById('videoInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            video.src = URL.createObjectURL(file);
+            video.onloadedmetadata = () => {
+                // Dynamically adjust cropPoints based on video dimensions
+                const videoWidth = video.videoWidth;
+                const videoHeight = video.videoHeight;
+                // Default crop: full width, bottom 1/3 of the video
+                cropPoints = {
+                    x1: 0,
+                    y1: videoHeight * 2 / 3, // Start at 2/3 of the height
+                    x2: videoWidth,
+                    y2: videoHeight * 2 / 3,
+                    x3: videoWidth,
+                    y3: videoHeight,
+                    x4: 0,
+                    y4: videoHeight
+                };
+                updateCropRect();
+            };
+        });
+
+        // Timeline and markers
+        video.ontimeupdate = () => {
+            const percent = (video.currentTime / video.duration) * 100;
+            markers.forEach(m => {
+                m.element.style.left = `${(m.time / video.duration) * 100}%`;
+            });
+        };
+
+// 頂部Y調整函數 (控制y1和y2)
+function updateSimpleYTop() {
+    const yValue = parseFloat(document.getElementById('simpleYTopInput').value);
+    if (!isNaN(yValue)) {
+        cropPoints.y1 = yValue;
+        cropPoints.y2 = yValue;
+        updateCropRect();
+    }
+}
+
+// 底部Y調整函數 (控制y3和y4)
+function updateSimpleYBottom() {
+    const yValue = parseFloat(document.getElementById('simpleYBottomInput').value);
+    if (!isNaN(yValue)) {
+        cropPoints.y3 = yValue;
+        cropPoints.y4 = yValue;
+        updateCropRect();
+    }
+}
+
+
+// 新增简易Y坐标调整函数
+function updateSimpleY() {
+    const yValue = parseFloat(document.getElementById('simpleYInput').value);
+    if (!isNaN(yValue)) {
+        // 同时修改左上和右上角的Y坐标
+        cropPoints.y1 = yValue;
+        cropPoints.y2 = yValue;
+        updateCropRect();
+    }
+}
+
+// 修改保存设置函数（去掉视频路径）
+function saveSettings() {
+    const settings = {
+        markers: markers.map(m => m.time),
+        cropPoints: cropPoints,
+        miniPlayerOffset: miniPlayerOffset,
+        currentTime: video.currentTime
+    };
+    
+    const blob = new Blob([JSON.stringify(settings, null, 2)], {type: 'text/plain'});
+    const link = document.createElement('a');
+    link.download = 'video_marker_settings.txt';
+    link.href = URL.createObjectURL(blob);
+    link.click();
+}
+
+function loadSettings() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.txt';
+    input.onchange = e => {
+        const file = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = event => {
+            try {
+                const settings = JSON.parse(event.target.result);
+                
+                // Clear existing markers
+                markers.forEach(m => timeline.removeChild(m.element));
+                markers = [];
+                
+                // Restore markers
+                settings.markers.forEach(time => {
+                    const marker = {
+                        time: time,
+                        element: document.createElement('div')
+                    };
+                    marker.element.className = 'marker';
+                    timeline.appendChild(marker.element);
+                    markers.push(marker);
+                });
+                
+                markers.sort((a, b) => a.time - b.time);
+                currentMarker = markers.length - 1;
+                
+                // Restore video if path is different
+                if (settings.videoPath && settings.videoPath !== video.src) {
+                    video.src = settings.videoPath;
+                }
+                
+                // Restore crop points
+                if (settings.cropPoints) {
+                    cropPoints = settings.cropPoints;
+                    updateCropRect();
+                }
+                
+                // Restore mini player offset
+                if (settings.miniPlayerOffset !== undefined) {
+                    miniPlayerOffset = settings.miniPlayerOffset;
+                }
+                
+                // Restore video time
+                if (settings.currentTime !== undefined) {
+                    video.currentTime = settings.currentTime;
+                }
+                // 在載入後更新簡易輸入框
+    if (settings.cropPoints) {
+        document.getElementById('simpleYTopInput').value = settings.cropPoints.y1;
+        document.getElementById('simpleYBottomInput').value = settings.cropPoints.y3;
+    }
+
+                // Update UI
+                createMiniPlayers();
+                
+            } catch (error) {
+                console.error('Error loading settings:', error);
+                alert('Invalid settings file');
+            }
+        };
+        reader.readAsText(file);
+    };
+    input.click();
+}
+
+        // Crop rectangle handling
+function updateCropRect() {
+    const rect = video.getBoundingClientRect();
+    const scaleX = rect.width / video.videoWidth;
+    const scaleY = rect.height / video.videoHeight;
+    cropRect.style.left = `${rect.left + cropPoints.x1 * scaleX}px`;
+    cropRect.style.top = `${cropPoints.y1 * scaleY + rect.top-38}px`;
+    cropRect.style.width = `${(cropPoints.x2 - cropPoints.x1) * scaleX}px`;
+    cropRect.style.height = `${(cropPoints.y3 - cropPoints.y1) * scaleY}px`;
+    document.getElementById('rangeInput').value = 
+        `${cropPoints.x1},${cropPoints.y1},${cropPoints.x2},${cropPoints.y2},${cropPoints.x3},${cropPoints.y3},${cropPoints.x4},${cropPoints.y4}`;
+    
+    // 更新簡易輸入框的值
+    document.getElementById('simpleYTopInput').value = cropPoints.y1;
+    document.getElementById('simpleYBottomInput').value = cropPoints.y3;
+}
+
+        function updateCropRange() {
+            const input = document.getElementById('rangeInput').value.split(',');
+            if (input.length === 8) {
+                const newCropPoints = {
+                    x1: parseFloat(input[0]),
+                    y1: parseFloat(input[1]),
+                    x2: parseFloat(input[2]),
+                    y2: parseFloat(input[3]),
+                    x3: parseFloat(input[4]),
+                    y3: parseFloat(input[5]),
+                    x4: parseFloat(input[6]),
+                    y4: parseFloat(input[7])
+                };
+                // Validate crop points to ensure they are within video bounds
+                const videoWidth = video.videoWidth;
+                const videoHeight = video.videoHeight;
+                cropPoints = {
+                    x1: Math.max(0, Math.min(newCropPoints.x1, videoWidth)),
+                    y1: Math.max(0, Math.min(newCropPoints.y1, videoHeight)),
+                    x2: Math.max(0, Math.min(newCropPoints.x2, videoWidth)),
+                    y2: Math.max(0, Math.min(newCropPoints.y2, videoHeight)),
+                    x3: Math.max(0, Math.min(newCropPoints.x3, videoWidth)),
+                    y3: Math.max(0, Math.min(newCropPoints.y3, videoHeight)),
+                    x4: Math.max(0, Math.min(newCropPoints.x4, videoWidth)),
+                    y4: Math.max(0, Math.min(newCropPoints.y4, videoHeight))
+                };
+                updateCropRect();
+            }
+        }
+
+        video.onmousemove = (e) => {
+            if (dragging) {
+                const dx = e.clientX - dragStart.x;
+                const dy = e.clientY - dragStart.y;
+                cropPoints.x1 += dx; cropPoints.x2 += dx;
+                cropPoints.y1 += dy; cropPoints.y3 += dy;
+                updateCropRect();
+                dragStart = {x: e.clientX, y: e.clientY};
+            }
+        };
+
+        video.onmousedown = (e) => {
+            dragging = true;
+            dragStart = {x: e.clientX, y: e.clientY};
+        };
+
+        document.onmouseup = (e) => {
+            dragging = false;
+        };
+
+        // F key functionality: Move the nearest horizontal edge to the mouse Y position
+        document.onkeydown = (e) => {
+            if (e.key === 'f') {
+                isFPressed = true;
+                const rect = video.getBoundingClientRect();
+                const scaleY = video.videoHeight / rect.height;
+                const mouseY = (e.clientY - rect.top) * scaleY; // Mouse Y in video coordinates
+
+                // Find the nearest horizontal edge (top: y1, bottom: y3)
+                const distToTop = Math.abs(mouseY - cropPoints.y1);
+                const distToBottom = Math.abs(mouseY - cropPoints.y3);
+
+                if (distToTop < distToBottom) {
+                    // Move the top edge (y1, y2)
+                    cropPoints.y1 = mouseY;
+                    cropPoints.y2 = mouseY;
+                } else {
+                    // Move the bottom edge (y3, y4)
+                    cropPoints.y3 = mouseY;
+                    cropPoints.y4 = mouseY;
+                }
+
+                // Ensure crop points are within video bounds
+                const videoHeight = video.videoHeight;
+                cropPoints.y1 = Math.max(0, Math.min(cropPoints.y1, videoHeight));
+                cropPoints.y2 = Math.max(0, Math.min(cropPoints.y2, videoHeight));
+                cropPoints.y3 = Math.max(0, Math.min(cropPoints.y3, videoHeight));
+                cropPoints.y4 = Math.max(0, Math.min(cropPoints.y4, videoHeight));
+
+                updateCropRect();
+            }
+
+            switch(e.key) {
+                case 'm':
+                    const marker = {
+                        time: video.currentTime,
+                        element: document.createElement('div')
+                    };
+                    marker.element.className = 'marker';
+                    timeline.appendChild(marker.element);
+                    markers.push(marker);
+                    markers.sort((a, b) => a.time - b.time);
+                    currentMarker = markers.length - 1;
+                    break;
+                case 'z':
+                    if (markers.length) {
+                        currentMarker = Math.max(-1, currentMarker - 1);
+                        if (currentMarker >= 0) video.currentTime = markers[currentMarker].time;
+                    }
+                    break;
+                case 'x':
+                    if (markers.length) {
+                        currentMarker = Math.min(markers.length - 1, currentMarker + 1);
+                        if (currentMarker >= 0) video.currentTime = markers[currentMarker].time;
+                    }
+                    break;
+                case '0':
+                    if (currentMarker >= 0) {
+                        timeline.removeChild(markers[currentMarker].element);
+                        markers.splice(currentMarker, 1);
+                        currentMarker--;
+                    }
+                    break;
+                case 'p':
+                    if (markers.length > 0) {
+                        generateScreenshots();
+                    } else {
+                        console.log("No markers available to generate screenshots.");
+                    }
+                    break;
+                case '.':
+    miniPlayerOffset = Math.min(markers.length - 6, miniPlayerOffset + 5); // Jump 3 sections forward
+    if (miniPlayerOffset < 0) miniPlayerOffset = 0; // Ensure not negative
+    createMiniPlayers();
+    break;
+                case ',':
+    miniPlayerOffset = Math.max(0, miniPlayerOffset - 5); // Jump 3 sections backward
+    createMiniPlayers();
+    break;
+                case 'l':
+                    if (currentMiniPlayer) {
+                        currentMiniPlayer.loop = !currentMiniPlayer.loop;
+                        if (currentMiniPlayer.paused) {
+                            currentMiniPlayer.play();
+                        }
+                    }
+                    break;
+                case 's':
+                    miniPlayerSpeed = [1, 0.8, 0.6, 0.4, 0.2, 1][
+                        [1, 0.8, 0.6, 0.4, 0.2, 1].indexOf(miniPlayerSpeed) + 1
+                    ];
+                    document.querySelectorAll('.mini-player video').forEach(v => v.playbackRate = miniPlayerSpeed);
+                    break;
+            }
+        };
+
+        document.onkeyup = (e) => {
+            if (e.key === 'f') isFPressed = false;
+        };
+
+        // Generate screenshots and save as PNG
+async function generateScreenshots() {
+    if (markers.length === 0) {
+        console.log("No markers available to generate screenshots.");
+        return;
+    }
+
+    const cropWidth = Math.floor(cropPoints.x2 - cropPoints.x1);
+    const cropHeight = Math.floor(cropPoints.y3 - cropPoints.y1);
+    
+    // 增加有效性检查
+    if(cropWidth <= 0 || cropHeight <= 0) {
+        console.error("Invalid crop dimensions");
+        return;
+    }
+
+
+  // 确保视频已加载
+    if(video.readyState < 2) {
+        console.error("Video not ready");
+        return;
+    }
+
+    const totalHeight = cropHeight * markers.length;
+
+    // 强制同步当前视频状态到临时视频
+    const tempVideo = document.createElement('video');
+    tempVideo.src = video.src;
+    tempVideo.muted = true;
+    tempVideo.currentTime = video.currentTime;
+    
+    // 新增视频准备检查
+    await new Promise((resolve, reject) => {
+        tempVideo.onloadeddata = resolve;
+        tempVideo.onerror = reject;
+        tempVideo.load();
+    });
+    // 创建画布时使用整数尺寸
+    const canvas = document.createElement('canvas');
+    canvas.width = cropWidth;
+    canvas.height = totalHeight;
+    const ctx = canvas.getContext('2d');
+
+    // 使用seeked事件确保帧加载完成
+    for (let i = 0; i < markers.length; i++) {
+        tempVideo.currentTime = markers[i].time;
+        await new Promise(r => {
+            tempVideo.onseeked = () => {
+                // 确保使用整数坐标
+                ctx.drawImage(tempVideo, 
+                    Math.floor(cropPoints.x1), Math.floor(cropPoints.y1), 
+                    cropWidth, cropHeight,
+                    0, i * cropHeight, 
+                    cropWidth, cropHeight
+                );
+                r();
+            };
+            tempVideo.onerror = r; // 错误处理
+        });
+    }
+
+    // 分割画布时增加边界检查
+    const maxHeight = 10000;
+    const numImages = Math.ceil(totalHeight / maxHeight);
+    for (let i = 0; i < numImages; i++) {
+        const sliceHeight = Math.min(maxHeight, totalHeight - i * maxHeight);
+        if(sliceHeight <= 0) break;
+
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = cropWidth;
+        tempCanvas.height = sliceHeight;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // 使用精确的源坐标
+        tempCtx.drawImage(canvas, 
+            0, i * maxHeight,  // 源坐标
+            cropWidth, sliceHeight,
+            0, 0,              // 目标坐标
+            cropWidth, sliceHeight
+        );
+        
+        const link = document.createElement('a');
+        link.download = `screenshots_part_${i+1}.png`;
+        link.href = tempCanvas.toDataURL('image/png');
+        link.click();
+    }
+
+    displayScreenshots();
+}
+
+        // Display screenshots as clickable images
+async function displayScreenshots() {
+    miniPlayers.innerHTML = '';
+    const cropWidth = Math.floor(cropPoints.x2 - cropPoints.x1);
+    const cropHeight = Math.floor(cropPoints.y3 - cropPoints.y1);
+
+    // 创建临时视频元素
+    const tempVideo = document.createElement('video');
+    tempVideo.src = video.src;
+    tempVideo.muted = true;
+    await new Promise(r => tempVideo.onloadedmetadata = r);
+
+
+
+// 使用主视频元素避免同步问题
+    const originalTime = video.currentTime;
+    const originalPaused = video.paused;
+    
+    // 暂停主视频避免干扰
+    if(!video.paused) video.pause();
+
+    for (let i = 0; i < markers.length; i++) {
+        const canvas = document.createElement('canvas');
+        canvas.width = cropWidth;
+        canvas.height = cropHeight;
+        const ctx = canvas.getContext('2d');
+
+        // 使用seeked事件确保帧加载
+         // 直接使用主视频元素
+        video.currentTime = markers[i].time;
+        
+        // 增加等待时间确保帧加载
+        await new Promise(r => {
+            video.onseeked = r;
+            setTimeout(r, 200); // 双重保险
+            tempVideo.onseeked = () => {
+                ctx.drawImage(tempVideo, 
+                    Math.floor(cropPoints.x1), Math.floor(cropPoints.y1), 
+                    cropWidth, cropHeight,
+                    0, 0, 
+                    cropWidth, cropHeight
+                );
+                r();
+            };
+
+        });
+
+
+
+        // 增加图像有效性检查
+        if(!isCanvasBlank(canvas)) {
+            const img = document.createElement('img');
+            img.src = canvas.toDataURL('image/png');
+            img.className = 'screenshot';
+            img.dataset.index = i;
+            img.onclick = (e) => {
+                const index = parseInt(e.target.dataset.index);
+                createMiniPlayerFromScreenshot(index, e.target);
+            };
+            miniPlayers.appendChild(img);
+        }
+    }
+ // 恢复主视频状态
+    video.currentTime = originalTime;
+    if(!originalPaused) video.play();
+    createMiniPlayers();
+}
+
+<!-- 新增画布空白检查函数 -->
+function isCanvasBlank(canvas) {
+    const context = canvas.getContext('2d');
+    const pixelBuffer = new Uint32Array(
+        context.getImageData(0, 0, canvas.width, canvas.height).data.buffer
+    );
+    return !pixelBuffer.some(color => color !== 0);
+}
+        // Create a mini player when clicking a screenshot
+        function createMiniPlayerFromScreenshot(index, imgElement) {
+            const cropWidth = cropPoints.x2 - cropPoints.x1;
+            const cropHeight = cropPoints.y3 - cropPoints.y1;
+
+            const div = document.createElement('div');
+            div.className = 'mini-player';
+            
+            const v = document.createElement('video');
+            v.src = video.src;
+            v.controls = true;
+            v.style.width = `${cropWidth}px`;
+            v.style.height = `${cropHeight}px`;
+            v.style.objectFit = 'none';
+            v.style.objectPosition = `-${cropPoints.x1}px -${cropPoints.y1}px`;
+            v.currentTime = markers[index].time;
+            v.playbackRate = miniPlayerSpeed;
+
+            const startTime = markers[index].time;
+            const endTime = index < markers.length - 1 ? 
+                markers[index + 1].time : video.duration;
+
+            v.onplay = () => {
+                if (currentMiniPlayer && currentMiniPlayer !== v) currentMiniPlayer.pause();
+                currentMiniPlayer = v;
+            };
+
+            v.ontimeupdate = () => {
+                if (v.currentTime >= endTime) {
+                    v.loop ? v.currentTime = startTime : v.pause();
+                }
+            };
+
+            div.appendChild(v);
+            let label = `${index + 1}: ${markers[index].time.toFixed(1)}`;
+            if (index < markers.length - 1) {
+                label += ` - ${markers[index + 1].time.toFixed(1)}`;
+            } else {
+                label += ` - End`;
+            }
+            div.appendChild(document.createTextNode(label));
+            
+            // Replace the screenshot with the mini player
+            imgElement.parentNode.replaceChild(div, imgElement);
+        }
+
+        // Create mini players for A-B, B-C, etc., limited to 5 rows
+        function createMiniPlayers() {
+
+             // 在循环前添加视频状态检查
+    if(video.readyState < 2) {
+        console.log("Video not ready");
+        return;
+    }
+            if (markers.length < 2) return; // Need at least 2 markers for A-B, B-C
+
+            const cropWidth = cropPoints.x2 - cropPoints.x1;
+            const cropHeight = cropPoints.y3 - cropPoints.y1;
+
+            // Clear previous mini players (but keep screenshots)
+            const screenshots = miniPlayers.querySelectorAll('.screenshot');
+            miniPlayers.innerHTML = '';
+            screenshots.forEach(s => miniPlayers.appendChild(s));
+
+            // Calculate the range of mini players to display
+            const maxPairs = markers.length - 1; // Number of pairs (A-B, B-C, etc.)
+            miniPlayerOffset = Math.max(0, Math.min(miniPlayerOffset, maxPairs - 5)); // Ensure offset is valid
+            const startIndex = miniPlayerOffset;
+            const endIndex = Math.min(startIndex + 5, maxPairs);
+
+            for (let i = startIndex; i < endIndex; i++) {
+                const div = document.createElement('div');
+                div.className = 'mini-player';
+                
+                const v = document.createElement('video');
+                v.src = video.src;
+                v.controls = true;
+                v.style.width = `${cropWidth}px`;
+                v.style.height = `${cropHeight}px`;
+                v.style.objectFit = 'none';
+                v.style.objectPosition = `-${cropPoints.x1}px -${cropPoints.y1}px`;
+                v.currentTime = markers[i].time;
+                v.playbackRate = miniPlayerSpeed;
+
+                const startTime = markers[i].time;
+                const endTime = markers[i + 1].time;
+
+                v.onplay = () => {
+                    if (currentMiniPlayer && currentMiniPlayer !== v) currentMiniPlayer.pause();
+                    currentMiniPlayer = v;
+                };
+
+                v.ontimeupdate = () => {
+                    if (v.currentTime >= endTime) {
+                        v.loop ? v.currentTime = startTime : v.pause();
+                    }
+                };
+
+                div.appendChild(v);
+                div.appendChild(document.createTextNode(` ${i+1}-${i+2}: ${markers[i].time.toFixed(1)} - ${markers[i+1].time.toFixed(1)}`));
+                miniPlayers.appendChild(div);
+            }
+                // 在最後添加滾動定位
+    if (miniPlayers.firstChild) {
+        miniPlayers.firstChild.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+        }
+    </script>
+</body>
+</html>
